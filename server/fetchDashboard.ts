@@ -342,11 +342,17 @@ async function fetchPrDetails(refs: PrRef[], viewerLogin: string): Promise<Pr[]>
   const batches = chunk(refs, BATCH_SIZE)
   const batchResults = await mapWithConcurrency(batches, BATCH_CONCURRENCY, async (batchRefs) => {
     const { query, variables } = buildBatchQuery(batchRefs)
-    const data = await ghGraphQL<BatchedPrDetailResponse>(query, variables)
-    return batchRefs.map((ref, i) => {
+    // One PR we can't read (e.g. its org needs SSO authorisation for this
+    // token, or it was closed between the search and this request) shouldn't
+    // take the other PRs in the batch, or the whole refresh, down with it.
+    const data = await ghGraphQL<BatchedPrDetailResponse>(query, variables, { allowPartial: true })
+    return batchRefs.flatMap((ref, i) => {
       const pr = data[`pr${i}`]?.pullRequest
-      if (!pr) throw new Error(`${ref.nameWithOwner}#${ref.number} not found`)
-      return mapPrDetail(ref.nameWithOwner, ref.number, viewerLogin, pr)
+      if (!pr) {
+        console.warn(`[pr-dashboard] skipping ${ref.nameWithOwner}#${ref.number}: GitHub returned no detail for it`)
+        return []
+      }
+      return [mapPrDetail(ref.nameWithOwner, ref.number, viewerLogin, pr)]
     })
   })
   return batchResults.flat()

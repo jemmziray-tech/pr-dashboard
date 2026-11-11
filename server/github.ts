@@ -46,19 +46,53 @@ export async function ghJson<T>(args: string[]): Promise<T> {
   })
 }
 
-export async function ghGraphQL<T>(query: string, variables: Record<string, string | number>): Promise<T> {
+/**
+ * `gh api graphql` exits non-zero whenever the response carries an `errors`
+ * array, even when `data` is partly populated, but it still prints the
+ * response body to stdout. Recover that body so the caller can decide what
+ * to do with a partial result instead of only seeing "Command failed".
+ */
+function responseBodyOf(err: unknown): string | null {
+  if (typeof err !== 'object' || err === null || !('stdout' in err)) return null
+  const { stdout } = err as { stdout: unknown }
+  return typeof stdout === 'string' && stdout.trim().startsWith('{') ? stdout : null
+}
+
+export interface GraphQLOptions {
+  /**
+   * Return whatever `data` GitHub did send when the response also contains
+   * errors, rather than throwing. Fields that failed come back as `null`, so
+   * the caller must handle those. Rate-limit errors always throw (and retry).
+   */
+  allowPartial?: boolean
+}
+
+export async function ghGraphQL<T>(
+  query: string,
+  variables: Record<string, string | number>,
+  options: GraphQLOptions = {},
+): Promise<T> {
   return withRetry(async () => {
     const args = ['api', 'graphql', '-f', `query=${query}`]
     for (const [key, value] of Object.entries(variables)) {
       const flag = typeof value === 'number' ? '-F' : '-f'
       args.push(flag, `${key}=${value}`)
     }
-    const stdout = await runGh(args)
-    const parsed = JSON.parse(stdout) as { data: T; errors?: Array<{ message: string }> }
-    if (parsed.errors?.length) {
-      throw new Error(parsed.errors.map((e) => e.message).join('; '))
+    let stdout: string
+    try {
+      stdout = await runGh(args)
+    } catch (err) {
+      const body = responseBodyOf(err)
+      if (body === null) throw err
+      stdout = body
     }
-    return parsed.data
+    const parsed = JSON.parse(stdout) as { data?: T | null; errors?: Array<{ message: string }> }
+    if (parsed.errors?.length) {
+      const message = parsed.errors.map((e) => e.message).join('; ')
+      if (!options.allowPartial || !parsed.data || isRateLimitError(message)) throw new Error(message)
+      console.warn('[pr-dashboard] GitHub returned a partial response:', message)
+    }
+    return parsed.data as T
   })
 }
 
