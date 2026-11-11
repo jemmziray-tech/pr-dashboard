@@ -28,6 +28,11 @@ const BATCH_SIZE = 10
 // GitHub's (primary or secondary) rate limiting.
 const BATCH_CONCURRENCY = 3
 
+// The "unaddressed" checks below only care about the *latest* activity: the
+// last comment in each review thread, and the most recent non-bot comment in
+// the conversation. So these connections page from the end (`last:`), which
+// still returns nodes oldest-first. Paging from the start (`first:`) would
+// hand back stale comments on any PR with more than a page of them.
 const PR_DETAIL_FIELDS = `
   title
   body
@@ -59,7 +64,7 @@ const PR_DETAIL_FIELDS = `
       }
     }
   }
-  comments(first: 50) {
+  comments(last: 50) {
     totalCount
     nodes { author { login __typename } body url }
   }
@@ -75,11 +80,11 @@ const PR_DETAIL_FIELDS = `
       }
     }
   }
-  reviewThreads(first: 50) {
+  reviewThreads(last: 50) {
     nodes {
       isResolved
       isOutdated
-      comments(first: 50) {
+      comments(last: 1) {
         nodes { author { login } body url }
       }
     }
